@@ -181,6 +181,20 @@ struct pinconf_generic_params {
 	u32 default_value;
 };
 
+/**
+ * pinconf_generic_parse_dt_config()
+ * parse the config properties into generic pinconfig values.
+ * @np: node containing the pinconfig properties
+ * @pctldev: pincontrol device
+ * @configs: array with nconfigs entries containing the generic pinconf values
+ *           must be freed when no longer necessary.
+ * @nconfigs: number of configurations
+ */
+int pinconf_generic_parse_dt_config(struct device_node *np,
+				    struct pinctrl_dev *pctldev,
+				    unsigned long **configs,
+				    unsigned int *nconfigs);
+
 int pinconf_generic_dt_subnode_to_map(struct pinctrl_dev *pctldev,
 		struct device_node *np, struct pinctrl_map **map,
 		unsigned *reserved_maps, unsigned *num_maps,

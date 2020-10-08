@@ -10,6 +10,7 @@
 #include <linux/platform_device.h>
 #include <linux/bitfield.h>
 #include <linux/regmap.h>
+#include <linux/slab.h>
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/pinctrl/pinmux.h>
 #include <linux/pinctrl/pinconf.h>
@@ -68,31 +69,9 @@
 				 K210_PC_MODE_OUT | K210_PC_OE_INV)
 #define K210_PC_MODE_GPIO	(K210_PC_MODE_IN | K210_PC_MODE_OUT)
 
-#define K210_PF_FUNC		GENMASK(7, 0)
-#define K210_PF_DO		BIT(8)
-#define K210_PF_PIN		GENMASK(22, 16)
-
-/*
- * struct k210_functions: Pin function group descriptor
- * @name: function name
- * @npins: numbers of pins for the group
- * @pins: array of pins number array
- *
- * The function name come from the device tree fpioa_xxx nodes.
- * E.g., the node:
- * fpioa_uarths: uarths {
- * 	pinmux = <K210_FPIOA(4, K210_PCF_UARTHS_RX)>,
- *		 <K210_FPIOA(5, K210_PCF_UARTHS_TX)>;
- *	};
- * is represented as the function "uarths" with npins = 2 and pins = {4, 5}.
- * @pfs will store each pin function as defined by the K210_FPIOA() macro.
- */
-struct k210_function {
-	const char *name;
-	unsigned int npins;
-	unsigned int *pins;
-	u32 *pfs;
-};
+#define K210_PG_FUNC		GENMASK(7, 0)
+#define K210_PG_DO		BIT(8)
+#define K210_PG_PIN		GENMASK(22, 16)
 
 /*
  * struct k210_fpioa: Kendryte K210 FPIOA memory mapped registers
@@ -115,67 +94,57 @@ struct k210_fpioa_data {
 	struct regmap *sysctl_map;
 	u32 power_offset;
 	struct clk *clk;
-
-	struct k210_function *functions;
-	unsigned int nfunctions;
 };
 
-/*
- * The K210 has 48 programmable pins.
- * Each pin belong to a power domain.
- * Each domain can be 3.3v or 1.8v.
- */
-#define K210_POWER_NDOMAINS	8
-#define K210_PINS_PER_DOMAIN	6
-
-struct k210_power_domain {
-	const char *name;
-	const unsigned int pins[K210_PINS_PER_DOMAIN];
-};
-
-static const struct k210_power_domain
-k210_power_domains[K210_POWER_NDOMAINS] = {
-	[0] = { "A0", {  0,  1,  2,  3,  4,  5 } },
-	[1] = { "A1", {  6,  7,  8,  9, 10, 11 } },
-	[2] = { "A2", { 12, 13, 14, 15, 16, 17 } },
-	[3] = { "B3", { 18, 19, 20, 21, 22, 23 } },
-	[4] = { "B4", { 24, 25, 26, 27, 28, 29 } },
-	[5] = { "B5", { 30, 31, 32, 33, 34, 35 } },
-	[6] = { "C6", { 36, 37, 38, 39, 40, 41 } },
-	[7] = { "C7", { 42, 43, 44, 45, 46, 47 } },
-};
-
-#define K210_PIN(i)	[i] = PINCTRL_PIN(i, "IO_" #i)
+#define K210_PIN_LIST \
+	K210_PIN(0),  K210_PIN(1),  K210_PIN(2), \
+	K210_PIN(3),  K210_PIN(4),  K210_PIN(5), \
+	K210_PIN(6),  K210_PIN(7),  K210_PIN(8), \
+	K210_PIN(9),  K210_PIN(10), K210_PIN(11), \
+	K210_PIN(12), K210_PIN(13), K210_PIN(14), \
+	K210_PIN(15), K210_PIN(16), K210_PIN(17), \
+	K210_PIN(18), K210_PIN(19), K210_PIN(20), \
+	K210_PIN(21), K210_PIN(22), K210_PIN(23), \
+	K210_PIN(24), K210_PIN(25), K210_PIN(26), \
+	K210_PIN(27), K210_PIN(28), K210_PIN(29), \
+	K210_PIN(30), K210_PIN(31), K210_PIN(32), \
+	K210_PIN(33), K210_PIN(34), K210_PIN(35), \
+	K210_PIN(36), K210_PIN(37), K210_PIN(38), \
+	K210_PIN(39), K210_PIN(40), K210_PIN(41), \
+	K210_PIN(42), K210_PIN(43), K210_PIN(44), \
+	K210_PIN(45), K210_PIN(46), K210_PIN(47)
 
 static const struct pinctrl_pin_desc k210_pins[] =
 {
-	/* Power group A0 */
-	K210_PIN(0), K210_PIN(1), K210_PIN(2),
-	K210_PIN(3), K210_PIN(4), K210_PIN(5),
-	/* Power group A1 */
-	K210_PIN(6), K210_PIN(7), K210_PIN(8),
-	K210_PIN(9), K210_PIN(10), K210_PIN(11),
-	/* Power group A2 */
-	K210_PIN(12), K210_PIN(13), K210_PIN(14),
-	K210_PIN(15), K210_PIN(16), K210_PIN(17),
-	/* Power group B3 */
-	K210_PIN(18), K210_PIN(19), K210_PIN(20),
-	K210_PIN(21), K210_PIN(22), K210_PIN(23),
-	/* Power group B4 */
-	K210_PIN(24), K210_PIN(25), K210_PIN(26),
-	K210_PIN(27), K210_PIN(28), K210_PIN(29),
-	/* Power group B5 */
-	K210_PIN(30), K210_PIN(31), K210_PIN(32),
-	K210_PIN(33), K210_PIN(34), K210_PIN(35),
-	/* Power group C6 */
-	K210_PIN(36), K210_PIN(37), K210_PIN(38),
-	K210_PIN(39), K210_PIN(40), K210_PIN(41),
-	/* Power group C7 */
-	K210_PIN(42), K210_PIN(43), K210_PIN(44),
-	K210_PIN(45), K210_PIN(46), K210_PIN(47),
+#define K210_PIN(i) [i] = PINCTRL_PIN(i, "IO_" #i)
+	K210_PIN_LIST
+#undef K210_PIN
 };
 
-#define K210_NPINS	ARRAY_SIZE(k210_pins)
+#define K210_NPINS ARRAY_SIZE(k210_pins)
+
+static const char *const k210_group_names[] = {
+	/* The first 48 groups are for pins, one each */
+#define K210_PIN(i) [i] = k210_pins[i].name
+	K210_PIN_LIST,
+#undef K210_PIN
+
+	/*
+	 * These next 8 groups are for power domains, and, for the purposes of
+	 * the pin subsystem, contain no pins. They only exist to set the power
+	 * level. The id should never be used (since there are no pins 48-55).
+	 */
+	[48] = "A0",
+	[49] = "A1",
+	[50] = "A2",
+	[51] = "B3",
+	[52] = "B4",
+	[53] = "B5",
+	[54] = "C6",
+	[55] = "C7"
+};
+
+#define K210_NGROUPS ARRAY_SIZE(k210_group_names)
 
 enum k210_pinctrl_mode_id {
 	K210_PC_DEFAULT_DISABLED,
@@ -477,25 +446,12 @@ static const struct k210_pcf_info k210_pcf_infos[] = {
 	K210_FUNC(DEBUG31,		OUT),
 };
 
+#define K210_NFUNCS ARRAY_SIZE(k210_pcf_infos)
+
 #define PIN_CONFIG_OUTPUT_INVERT	(PIN_CONFIG_END + 1)
 #define PIN_CONFIG_INPUT_INVERT		(PIN_CONFIG_END + 2)
 
 static const struct pinconf_generic_params k210_pinconf_params[] = {
-	{ "bias-disable",	    PIN_CONFIG_BIAS_DISABLE, 0 },
-	{ "bias-pull-down",	    PIN_CONFIG_BIAS_PULL_DOWN, 1 },
-	{ "bias-pull-up",	    PIN_CONFIG_BIAS_PULL_UP, 1 },
-	{ "drive-strength",	    PIN_CONFIG_DRIVE_STRENGTH, U32_MAX },
-	{ "drive-strength-ua",	    PIN_CONFIG_DRIVE_STRENGTH_UA, U32_MAX },
-	{ "input-enable",	    PIN_CONFIG_INPUT_ENABLE, 1 },
-	{ "input-disable",	    PIN_CONFIG_INPUT_ENABLE, 0 },
-	{ "input-schmitt-enable",   PIN_CONFIG_INPUT_SCHMITT_ENABLE, 1 },
-	{ "input-schmitt-disable",  PIN_CONFIG_INPUT_SCHMITT_ENABLE, 0 },
-	{ "power-source",	    PIN_CONFIG_POWER_SOURCE, K210_PC_POWER_1V8 },
-	{ "output-low",		    PIN_CONFIG_OUTPUT, 0 },
-	{ "output-high",	    PIN_CONFIG_OUTPUT, 1 },
-	{ "output-enable",	    PIN_CONFIG_OUTPUT_ENABLE, 1 },
-	{ "output-disable",	    PIN_CONFIG_OUTPUT_ENABLE, 0 },
-	{ "slew-rate",		    PIN_CONFIG_SLEW_RATE, 1 },
 	{ "output-polarity-invert", PIN_CONFIG_OUTPUT_INVERT, 1 },
 	{ "input-polarity-invert",  PIN_CONFIG_INPUT_INVERT, 1 },
 };
@@ -521,7 +477,7 @@ static int k210_pinconf_get_drive(unsigned int max_strength_ua)
 	int i;
 
 	for (i = K210_PC_DRIVE_MAX; i; i--) {
-		if (k210_pinconf_drive_strength[i] < max_strength_ua)
+		if (k210_pinconf_drive_strength[i] <= max_strength_ua)
 			return i;
 	}
 
@@ -529,21 +485,12 @@ static int k210_pinconf_get_drive(unsigned int max_strength_ua)
 }
 
 static void k210_pinmux_set_pin_function(struct pinctrl_dev *pctldev,
-					 u32 pf)
+					 u32 pin, u32 func)
 {
 	struct k210_fpioa_data *pdata = pinctrl_dev_get_drvdata(pctldev);
-	unsigned pin = FIELD_GET(K210_PF_PIN, pf);
-	bool do_oe = FIELD_GET(K210_PF_DO, pf);
-	unsigned func = FIELD_GET(K210_PF_FUNC, pf);
 	const struct k210_pcf_info *info = &k210_pcf_infos[func];
 	u32 mode = k210_pinconf_mode_id_to_mode[info->mode_id];
-	u32 val = func | mode | (do_oe ? K210_PC_DO_OE : 0);
-
-	dev_dbg(pdata->dev,
-		"set mux (0x%08x): IO_%02u = %03u (%s), "
-		"mode %d -> 0x%08x\n",
-		pf, pin, func, info->name,
-		info->mode_id, mode);
+	u32 val = func | mode;
 
 	writel(val, &pdata->fpioa->pins[pin]);
 }
@@ -599,8 +546,7 @@ static int k210_pinconf_set_param(struct pinctrl_dev *pctldev,
 			val &= ~K210_PC_ST;
 		break;
 	case PIN_CONFIG_OUTPUT:
-		k210_pinmux_set_pin_function(pctldev,
-					K210_FPIOA(pin, K210_PCF_CONSTANT));
+		k210_pinmux_set_pin_function(pctldev, pin, K210_PCF_CONSTANT);
 		val = readl(&pdata->fpioa->pins[pin]);
 		val |= K210_PC_MODE_OUT;
 		if (!arg)
@@ -659,75 +605,12 @@ static int k210_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin,
 	return 0;
 }
 
-static int k210_pinconf_get(struct pinctrl_dev *pctldev,
-			    unsigned int pin, unsigned long *config)
-{
-	struct k210_fpioa_data *pdata = pinctrl_dev_get_drvdata(pctldev);
-
-	if (pin >= K210_NPINS)
-		return -EINVAL;
-
-	*config = readl(&pdata->fpioa->pins[pin]);
-
-	return 0;
-}
-
 static void k210_pinconf_dbg_show(struct pinctrl_dev *pctldev,
 				  struct seq_file *s, unsigned int pin)
 {
-	unsigned long config;
-	int ret;
-
-	ret = k210_pinconf_get(pctldev, pin, &config);
-	if (ret)
-		return;
-
-	seq_printf(s, "0x%lx", config);
-}
-
-static int k210_pinconf_set_power_domain(struct pinctrl_dev *pctldev,
-					 const struct k210_function *function,
-					 unsigned int arg)
-{
 	struct k210_fpioa_data *pdata = pinctrl_dev_get_drvdata(pctldev);
-	int last_domain = -1;
-	int i, domain;
-	u32 bit;
 
-	/*
-	 * The function pins may be over several power domains.
-	 * Set all of them.
-	 */
-	for (i = 0; i < function->npins; i++) {
-		domain = function->pins[i] / K210_PINS_PER_DOMAIN;
-		if (domain == last_domain)
-			continue;
-		last_domain = domain;
-
-		bit = BIT(domain);
-		regmap_update_bits(pdata->sysctl_map,
-				   pdata->power_offset, bit,
-				   arg ? bit : 0);
-	}
-
-	return 0;
-}
-
-static void k210_pinconf_get_power_domains(struct k210_fpioa_data *pdata)
-{
-	int ret, i;
-	u32 val;
-
-	ret = regmap_read(pdata->sysctl_map, pdata->power_offset, &val);
-	if (ret) {
-		dev_err(pdata->dev, "Failed to read power reg\n");
-		return;
-	}
-
-	dev_dbg(pdata->dev, "Power domains:\n");
-	for (i = 0; i < K210_POWER_NDOMAINS; i++)
-		dev_dbg(pdata->dev, "    %d: %s V\n",
-			i, val & BIT(i) ? "1.8" : "3.3");
+	seq_printf(s, "%#x", readl(&pdata->fpioa->pins[pin]));
 }
 
 static int k210_pinconf_group_set(struct pinctrl_dev *pctldev,
@@ -735,31 +618,26 @@ static int k210_pinconf_group_set(struct pinctrl_dev *pctldev,
 				  unsigned int num_configs)
 {
 	struct k210_fpioa_data *pdata = pinctrl_dev_get_drvdata(pctldev);
-	const struct k210_function *function;
 	unsigned int param, arg;
-	int ret, i, j;
+	int i;
 
-	if (WARN_ON(selector >= pdata->nfunctions))
+	/* Pins should be configured with pinmux, not groups*/
+	if (selector < K210_NPINS)
 		return -EINVAL;
 
-	function = &pdata->functions[selector];
+	/* Otherwise it's a power domain */
 	for (i = 0; i < num_configs; i++) {
 		param = pinconf_to_config_param(configs[i]);
 		arg = pinconf_to_config_argument(configs[i]);
 
 		if (param == PIN_CONFIG_POWER_SOURCE) {
-			ret = k210_pinconf_set_power_domain(pctldev,
-							    function, arg);
-			if (ret)
-				return ret;
-			continue;
-		}
+			u32 bit = BIT(selector - K210_NPINS);
 
-		for (j = 0; j < function->npins; j++) {
-			ret = k210_pinconf_set_param(pctldev, function->pins[j],
-						     param, arg);
-			if (ret)
-				return ret;
+			regmap_update_bits(pdata->sysctl_map,
+					   pdata->power_offset,
+					   bit, arg ? bit : 0);
+		} else {
+			return -EINVAL;
 		}
 	}
 
@@ -771,30 +649,24 @@ static void k210_pinconf_group_dbg_show(struct pinctrl_dev *pctldev,
 					unsigned int selector)
 {
 	struct k210_fpioa_data *pdata = pinctrl_dev_get_drvdata(pctldev);
-	const struct k210_function *function;
-	unsigned long config;
-	unsigned int pin;
-	int i, ret;
+	int ret;
+	u32 val;
 
-	if (selector >= pdata->nfunctions)
+	if (selector < K210_NPINS)
+		return k210_pinconf_dbg_show(pctldev, s, selector);
+
+	ret = regmap_read(pdata->sysctl_map, pdata->power_offset, &val);
+	if (ret) {
+		dev_err(pdata->dev, "Failed to read power reg\n");
 		return;
-
-	seq_putc(s, '\n');
-
-	function = &pdata->functions[selector];
-	for (i = 0; i < function->npins; i++) {
-		pin = function->pins[i];
-		ret = k210_pinconf_get(pctldev, pin, &config);
-		if (ret)
-			return;
-
-		seq_printf(s, "%s: 0x%08lx ", k210_pins[pin].name, config);
 	}
+
+	seq_printf(s, "%s: %s V", k210_group_names[selector],
+		   val & BIT(selector - K210_NPINS) ? "1.8" : "3.3");
 }
 
 static const struct pinconf_ops k210_pinconf_ops = {
 	.is_generic = true,
-	.pin_config_get = k210_pinconf_get,
 	.pin_config_set = k210_pinconf_set,
 	.pin_config_group_set = k210_pinconf_group_set,
 	.pin_config_dbg_show = k210_pinconf_dbg_show,
@@ -803,20 +675,13 @@ static const struct pinconf_ops k210_pinconf_ops = {
 
 static int k210_pinmux_get_function_count(struct pinctrl_dev *pctldev)
 {
-	struct k210_fpioa_data *pdata = pinctrl_dev_get_drvdata(pctldev);
-
-	return pdata->nfunctions;
+	return K210_NFUNCS;
 }
 
 static const char *k210_pinmux_get_function_name(struct pinctrl_dev *pctldev,
 						 unsigned int selector)
 {
-	struct k210_fpioa_data *pdata = pinctrl_dev_get_drvdata(pctldev);
-
-	if (WARN_ON(selector >= pdata->nfunctions))
-		return NULL;
-
-	return pdata->functions[selector].name;
+	return k210_pcf_infos[selector].name;
 }
 
 static int k210_pinmux_get_function_groups(struct pinctrl_dev *pctldev,
@@ -824,16 +689,9 @@ static int k210_pinmux_get_function_groups(struct pinctrl_dev *pctldev,
 					   const char * const **groups,
 					   unsigned int * const num_groups)
 {
-	struct k210_fpioa_data *pdata = pinctrl_dev_get_drvdata(pctldev);
-	struct k210_function *func;
-
-	if (WARN_ON(selector >= pdata->nfunctions))
-		return -EINVAL;
-
-	func = &pdata->functions[selector];
-
-	*groups = &pdata->functions[selector].name;
-	*num_groups = 1;
+	/* Every function can be mapped to every pin */
+	*groups = k210_group_names;
+	*num_groups = K210_NPINS;
 
 	return 0;
 }
@@ -842,19 +700,11 @@ static int k210_pinmux_set_mux(struct pinctrl_dev *pctldev,
 			       unsigned int function,
 			       unsigned int group)
 {
-	struct k210_fpioa_data *pdata = pinctrl_dev_get_drvdata(pctldev);
-	struct k210_function *f;
-	int i;
-
-	if (WARN_ON(function >= pdata->nfunctions))
+	/* Can't mux power domains */
+	if (group >= K210_NPINS)
 		return -EINVAL;
 
-	dev_dbg(pdata->dev, "Set function %s mux\n",
-		pdata->functions[function].name);
-
-	f = &pdata->functions[function];
-	for (i = 0; i < f->npins; i++)
-		k210_pinmux_set_pin_function(pctldev, f->pfs[i]);
+	k210_pinmux_set_pin_function(pctldev, group, function);
 
 	return 0;
 }
@@ -869,20 +719,13 @@ static const struct pinmux_ops k210_pinmux_ops = {
 
 static int k210_pinctrl_get_groups_count(struct pinctrl_dev *pctldev)
 {
-	struct k210_fpioa_data *pdata = pinctrl_dev_get_drvdata(pctldev);
-
-	return pdata->nfunctions;
+	return K210_NGROUPS;
 }
 
 static const char *k210_pinctrl_get_group_name(struct pinctrl_dev *pctldev,
 					       unsigned int group)
 {
-	struct k210_fpioa_data *pdata = pinctrl_dev_get_drvdata(pctldev);
-
-	if (WARN_ON(group >= pdata->nfunctions))
-		return NULL;
-
-	return pdata->functions[group].name;
+	return k210_group_names[group];
 }
 
 static int k210_pinctrl_get_group_pins(struct pinctrl_dev *pctldev,
@@ -890,13 +733,13 @@ static int k210_pinctrl_get_group_pins(struct pinctrl_dev *pctldev,
 				       const unsigned int **pins,
 				       unsigned int *npins)
 {
-	struct k210_fpioa_data *pdata = pinctrl_dev_get_drvdata(pctldev);
-
-	if (WARN_ON(group >= pdata->nfunctions))
-		return -EINVAL;
-
-	*pins = pdata->functions[group].pins;
-	*npins = pdata->functions[group].npins;
+	if (group > K210_NPINS) {
+		*pins = NULL;
+		*npins = 0;
+	} else {
+		*pins = &k210_pins[group].number;
+		*npins = 1;
+	}
 
 	return 0;
 }
@@ -907,48 +750,111 @@ static void k210_pinctrl_pin_dbg_show(struct pinctrl_dev *pctldev,
 	seq_printf(s, "%s", dev_name(pctldev->dev));
 }
 
-static int k210_pinctrl_dt_node_to_map(struct pinctrl_dev *pctldev,
-				       struct device_node *node,
-				       struct pinctrl_map **map,
-				       unsigned *num_maps)
+static int k210_pinctrl_dt_subnode_to_map(struct pinctrl_dev *pctldev,
+					  struct device_node *np,
+					  struct pinctrl_map **map,
+					  unsigned *reserved_maps,
+					  unsigned *num_maps)
 {
-	struct k210_fpioa_data *pdata = pinctrl_dev_get_drvdata(pctldev);
-	struct k210_function *function = NULL;
-	unsigned int reserved_maps = 0;
-	int i, ret;
+	struct property *prop;
+	const __be32 *p;
+	int ret, pinmux_groups;
+	u32 pinmux_group;
+ 	unsigned long *configs = NULL;
+	unsigned num_configs = 0;
+	unsigned int reserve = 0;
 
+	ret = of_property_count_strings(np, "groups");
+	if (!ret)
+		return pinconf_generic_dt_subnode_to_map(pctldev, np, map,
+							 reserved_maps,
+							 num_maps,
+							 PIN_MAP_TYPE_CONFIGS_GROUP);
+
+	pinmux_groups = of_property_count_u32_elems(np, "pinmux");
+	if (pinmux_groups < 0)
+		/* Skip this node */
+		return 0;
+
+	ret = pinconf_generic_parse_dt_config(np, pctldev, &configs,
+					      &num_configs);
+	if (ret < 0) {
+		dev_err(pctldev->dev, "%pOF: could not parse node property\n",
+			np);
+		return ret;
+	}
+
+	reserve = pinmux_groups * (1 + num_configs);
+	ret = pinctrl_utils_reserve_map(pctldev, map, reserved_maps, num_maps,
+					reserve);
+	if (ret < 0)
+		goto exit;
+
+	of_property_for_each_u32(np, "pinmux", prop, p, pinmux_group) {
+		const char *group_name, *func_name;
+		u32 pin = FIELD_GET(K210_PG_PIN, pinmux_group);
+		u32 func = FIELD_GET(K210_PG_FUNC, pinmux_group);
+
+		if (pin > K210_NPINS) {
+			ret = -EINVAL;
+			goto exit;
+		}
+
+		group_name = k210_group_names[pin];
+		func_name = k210_pcf_infos[func].name;
+		ret = pinctrl_utils_add_map_mux(pctldev, map, reserved_maps,
+						num_maps, group_name,
+						func_name);
+		if (ret < 0)
+			goto exit;
+
+		if (num_configs) {
+			ret = pinctrl_utils_add_map_configs(pctldev, map,
+					reserved_maps, num_maps, group_name,
+					configs, num_configs,
+					PIN_MAP_TYPE_CONFIGS_PIN);
+			if (ret < 0)
+				goto exit;
+		}
+	}
+
+	ret = 0;
+
+exit:
+	kfree(configs);
+	return ret;
+}
+
+int k210_pinctrl_dt_node_to_map(struct pinctrl_dev *pctldev,
+		struct device_node *np_config, struct pinctrl_map **map,
+		unsigned *num_maps)
+{
+	unsigned reserved_maps;
+	struct device_node *np;
+	int ret;
+
+	reserved_maps = 0;
 	*map = NULL;
 	*num_maps = 0;
 
-	/* Find the function using the node name */
-	for (i = 0; i < pdata->nfunctions; i++) {
-		if (!strcmp(node->name, pdata->functions[i].name)) {
-			function = &pdata->functions[i];
-			break;
-		}
-	}
-	if (!function) {
-		dev_err(pdata->dev, "function %s not defined\n", node->name);
-		return -ENOTSUPP;
-	}
+	ret = k210_pinctrl_dt_subnode_to_map(pctldev, np_config, map,
+					     &reserved_maps, num_maps);
+	if (ret < 0)
+		goto err;
 
-	ret = pinctrl_utils_reserve_map(pctldev, map, &reserved_maps,
-					num_maps, 1);
-	if (ret) {
-		dev_err(pdata->dev, "reserve map failed %d\n", ret);
-		return ret;
+	for_each_available_child_of_node(np_config, np) {
+		ret = k210_pinctrl_dt_subnode_to_map(pctldev, np, map,
+						     &reserved_maps, num_maps);
+		if (ret < 0)
+			goto err;
 	}
-
-	ret = pinctrl_utils_add_map_mux(pctldev, map,
-					&reserved_maps, num_maps,
-					function->name, function->name);
-	if (ret) {
-		dev_err(pdata->dev, "add function map failed %d\n", ret);
-		return ret;
-	}
-
 	return 0;
+
+err:
+	pinctrl_utils_free_map(pctldev, *map, *num_maps);
+	return ret;
 }
+
 
 static const struct pinctrl_ops k210_pinctrl_ops = {
 	.get_groups_count = k210_pinctrl_get_groups_count,
@@ -967,73 +873,8 @@ static struct pinctrl_desc k210_pinctrl_desc = {
 	.pmxops = &k210_pinmux_ops,
 	.confops = &k210_pinconf_ops,
 	.custom_params = k210_pinconf_params,
-	.num_custom_params = K210_PINCONF_NPARAMS,
+	.num_custom_params = ARRAY_SIZE(k210_pinconf_params),
 };
-
-static int k210_fpioa_get_functions(struct k210_fpioa_data *pdata)
-{
-	struct device *dev = pdata->dev;
-	struct device_node *child, *np = pdata->dev->of_node;
-	struct k210_function *functions;
-	struct property *prop;
-	const __be32 *cur;
-	int nfunctions;
-	int ret, p, i = 0;
-	u32 pf;
-
-	/* The number of groups is the number of child nodes */
-	nfunctions = of_get_child_count(np);
-	if (!nfunctions)
-		return 0;
-
-	functions = devm_kcalloc(dev, nfunctions,
-			      sizeof(struct k210_function), GFP_KERNEL);
-	if (!functions)
-		return -ENOMEM;
-
-	/* Get the pins in each group */
-	for_each_child_of_node(np, child) {
-		ret = of_property_count_u32_elems(child, "pinmux");
-		if (ret <= 0)
-			continue;
-
-		functions[i].name = child->name;
-		functions[i].npins = ret;
-		functions[i].pins = devm_kcalloc(dev, functions[i].npins,
-					sizeof(unsigned int), GFP_KERNEL);
-		if (!functions[i].pins)
-			return -ENOMEM;
-
-		functions[i].pfs = devm_kcalloc(dev, functions[i].npins,
-					sizeof(u32), GFP_KERNEL);
-		if (!functions[i].pfs)
-			return -ENOMEM;
-
-		dev_dbg(dev, "function %s: %d pins\n",
-			functions[i].name, functions[i].npins);
-		p = 0;
-		of_property_for_each_u32(child, "pinmux", prop, cur, pf) {
-			functions[i].pfs[p] = pf;
-			functions[i].pins[p] = FIELD_GET(K210_PF_PIN, pf);
-			if (functions[i].pins[p] >= K210_NPINS) {
-				dev_err(dev,
-					"invalid pin %u in function %s\n",
-					functions[i].pins[p],
-					functions[i].name);
-				return -EINVAL;
-			}
-			dev_dbg(dev, "    pin %u\n", functions[i].pins[p]);
-			p++;
-		}
-
-		i++;
-	}
-
-	pdata->functions = functions;
-	pdata->nfunctions = i;
-
-	return 0;
-}
 
 static void k210_fpioa_init_ties(struct k210_fpioa_data *pdata)
 {
@@ -1117,12 +958,6 @@ static int k210_fpioa_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	ret = k210_fpioa_get_functions(pdata);
-	if (ret) {
-		dev_err(dev, "get functions information failed\n");
-		return ret;
-	}
-
 	k210_fpioa_init_ties(pdata);
 
 	pdata->pctl = pinctrl_register(&k210_pinctrl_desc, dev, (void *)pdata);
@@ -1131,8 +966,6 @@ static int k210_fpioa_probe(struct platform_device *pdev)
 			PTR_ERR(pdata->pctl));
 		return PTR_ERR(pdata->pctl);
 	}
-
-	k210_pinconf_get_power_domains(pdata);
 
 	return 0;
 }
